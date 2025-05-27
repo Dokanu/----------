@@ -19,13 +19,16 @@ class App(tk.Tk):
         self.rel_tab = RelationTab(tab, self.db)
         self.view_tab = ViewTab(tab, self.db)
         self.chart_tab = ChartTab(tab, self.db)
+        self.query_tab = QueryTab(tab, self.db)
+
         tab.add(self.table_tab, text="Таблицы")
         tab.add(self.rel_tab, text="Связи 1-N")
         tab.add(self.view_tab, text="Представления")
         tab.add(self.chart_tab, text="Диаграмма")
+        tab.add(self.query_tab, text="Запросы")
         tab.pack(fill='both', expand=True)
 
-# --- здесь вставляете полностью реализованный класс TableTab ---
+# --- TableTab (без изменений) ---
 class TableTab(ttk.Frame):
     def __init__(self, parent, db):
         super().__init__(parent)
@@ -139,15 +142,14 @@ class TableTab(ttk.Frame):
             self.db.execute(f"DELETE FROM {table} WHERE {key}=%s;", [orig[key]])
             self.load_data()
 
-# --- ниже обязательно идут определения RelationTab, ViewTab и ChartTab ---
-
+# --- RelationTab ---
 class RelationTab(ttk.Frame):
     def __init__(self, parent, db):
         super().__init__(parent)
         self.db = db
-        # TODO: реализовать составную форму 1-N
         ttk.Label(self, text="Составная форма пока не реализована").pack(padx=10, pady=10)
 
+# --- ViewTab ---
 class ViewTab(ttk.Frame):
     def __init__(self, parent, db):
         super().__init__(parent)
@@ -169,6 +171,7 @@ class ViewTab(ttk.Frame):
         for c in cols: self.tree.heading(c, text=c)
         for row in data: self.tree.insert('', 'end', values=[row[c] for c in cols])
 
+# --- ChartTab ---
 class ChartTab(ttk.Frame):
     def __init__(self, parent, db):
         super().__init__(parent)
@@ -192,6 +195,49 @@ class ChartTab(ttk.Frame):
             df.to_excel(file, index=False)
             messagebox.showinfo("Экспорт", "Данные экспортированы")
 
+# --- QueryTab (новая вкладка) ---
+class QueryTab(ttk.Frame):
+    def __init__(self, parent, db):
+        super().__init__(parent)
+        self.db = db
+        self.functions = self.get_functions()
+        self.func_cb = ttk.Combobox(self, values=self.functions, state='readonly')
+        self.func_cb.current(0)
+        self.func_cb.pack(padx=5, pady=5)
+        ttk.Button(self, text="Выполнить", command=self.execute_function).pack(pady=5)
+        self.tree = ttk.Treeview(self, show='headings')
+        self.tree.pack(fill='both', expand=True)
+
+    def get_functions(self):
+        # Получение пользовательских функций из базы данных
+        rows = self.db.fetch_all("""
+            SELECT routine_name
+            FROM information_schema.routines
+            WHERE routine_schema = 'public' AND routine_type = 'FUNCTION';
+        """)
+        return [r['routine_name'] for r in rows]
+
+    def execute_function(self):
+        func = self.func_cb.get()
+        try:
+            data = self.db.call_function(func)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка при выполнении функции:\n{e}")
+            return
+
+        self.tree.delete(*self.tree.get_children())
+        if not data:
+            self.tree['columns'] = []
+            return
+        cols = list(data[0].keys())
+        self.tree['columns'] = cols
+        for c in cols:
+            self.tree.heading(c, text=c)
+            self.tree.column(c, width=120)
+        for row in data:
+            self.tree.insert('', 'end', values=[row[c] for c in cols])
+
+# --- Запуск приложения ---
 if __name__ == '__main__':
     DSN = "host=localhost dbname=kurs_bd user=postgres password=admin2005"
     app = App(DSN)
