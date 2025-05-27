@@ -3,6 +3,9 @@ from tkinter import ttk, messagebox, filedialog
 import pandas as pd
 import matplotlib.pyplot as plt
 from db import Database
+from PIL import Image, ImageTk
+import io
+
 
 class App(tk.Tk):
     def __init__(self, db_dsn):
@@ -71,6 +74,8 @@ class TableTab(ttk.Frame):
 
         self.tree = ttk.Treeview(tree_frame, show='headings', yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         self.tree.pack(side='left', fill='both', expand=True)
+        self.tree.bind("<Double-1>", self.on_row_double_click)
+
 
         y_scroll.config(command=self.tree.yview)
         y_scroll.pack(side='right', fill='y')
@@ -107,13 +112,157 @@ class TableTab(ttk.Frame):
         self._display(rows)
 
     def add_record(self):
-        ...
+        table = self.table_cb.get()
+        cols = self.db.fetch_all(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name=%s AND column_name NOT LIKE '%%_id';", [table]
+        )
+        if not cols:
+            messagebox.showerror("Ошибка", "Нет данных для добавления"); return
+
+        win = tk.Toplevel(self)
+        win.title(f"Добавить запись в {table}")
+        entries = {}
+
+        for i, col in enumerate(cols):
+            name, dtype = col['column_name'], col['data_type']
+            ttk.Label(win, text=name).grid(row=i, column=0, padx=5, pady=5, sticky='w')
+
+            if dtype == 'boolean':
+                var = tk.BooleanVar()
+                chk = ttk.Checkbutton(win, variable=var)
+                chk.grid(row=i, column=1, padx=5, pady=5, sticky='w')
+                entries[name] = var
+
+            elif dtype == 'bytea':
+                var = tk.StringVar()
+                def choose_file(v=var):
+                    file = filedialog.askopenfilename(filetypes=[("Изображения", "*.jpg *.png *.bmp *.gif")])
+                    if file: v.set(file)
+                ttk.Button(win, text="Выбрать файл", command=choose_file).grid(row=i, column=1, padx=5, pady=5, sticky='w')
+                ttk.Label(win, textvariable=var).grid(row=i, column=2, padx=5, pady=5, sticky='w')
+                entries[name] = var
+
+            else:
+                ent = ttk.Entry(win)
+                ent.grid(row=i, column=1, padx=5, pady=5, sticky='w')
+                entries[name] = ent
+
+        def submit():
+            values = []
+            for col in cols:
+                name, dtype = col['column_name'], col['data_type']
+                if dtype == 'boolean':
+                    values.append(entries[name].get())
+                elif dtype == 'bytea':
+                    path = entries[name].get()
+                    if path:
+                        with open(path, 'rb') as f:
+                            values.append(f.read())
+                    else:
+                        values.append(None)
+                else:
+                    val = entries[name].get()
+                    values.append(val if val != '' else None)
+
+            placeholders = ','.join(['%s'] * len(values))
+            names = ','.join([c['column_name'] for c in cols])
+            try:
+                self.db.execute(f"INSERT INTO {table} ({names}) VALUES ({placeholders})", values)
+                self.load_data()
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("Ошибка добавления", str(e))
+
+        ttk.Button(win, text="Сохранить", command=submit).grid(row=len(cols), columnspan=3, pady=10)
 
     def edit_record(self):
-        ...
+        table = self.table_cb.get()
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Выбор", "Выберите строку для редактирования")
+            return
+        row = self.tree.item(selected[0])['values']
+        columns = [c for c in self.current_data[0].keys() if not c.endswith('_id')]
+        id_col = [c for c in self.current_data[0].keys() if c.endswith('_id')][0]
+        id_val = self.current_data[self.tree.index(selected[0])][id_col]
+        values = dict(zip(columns, row))
+
+        def submit():
+            for c in columns:
+                values[c] = entries[c].get()
+            set_clause = ', '.join([f"{c}=%s" for c in columns])
+            sql = f"UPDATE {table} SET {set_clause} WHERE {id_col} = %s;"
+            try:
+                self.db.execute(sql, list(values.values()) + [id_val])
+                self.load_data()
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("Ошибка редактирования", str(e))
+
+        win = tk.Toplevel(self)
+        win.title("Редактирование записи")
+        entries = {}
+        for c in columns:
+            ttk.Label(win, text=c).pack()
+            e = ttk.Entry(win)
+            e.insert(0, str(values[c]))
+            e.pack()
+            entries[c] = e
+        ttk.Button(win, text="Сохранить", command=submit).pack(pady=5)
 
     def delete_record(self):
-        ...
+        table = self.table_cb.get()
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Выбор", "Выберите строку для удаления")
+            return
+        id_col = [c for c in self.current_data[0].keys() if c.endswith('_id')][0]
+        id_val = self.current_data[self.tree.index(selected[0])][id_col]
+        confirm = messagebox.askyesno("Удаление", "Вы уверены, что хотите удалить запись?")
+        if confirm:
+            try:
+                self.db.execute(f"DELETE FROM {table} WHERE {id_col} = %s;", [id_val])
+                self.load_data()
+            except Exception as e:
+                messagebox.showerror("Ошибка удаления", str(e))
+
+    def on_row_double_click(self, event):
+        selected = self.tree.selection()
+        if not selected:
+            return
+
+        table = self.table_cb.get()
+        row_index = self.tree.index(selected[0])
+        record = self.current_data[row_index]
+
+        win = tk.Toplevel(self)
+        win.title("Детальная информация")
+        win.geometry("400x200")
+
+        row = 0
+        for key, value in record.items():
+            if key.endswith('_id'):
+                continue
+
+            if isinstance(value, bytes):
+                try:
+                    image = Image.open(io.BytesIO(value))
+                    image = image.resize((200, 200))  # размер подгоняется под форму
+                    photo = ImageTk.PhotoImage(image)
+                    label = ttk.Label(win, image=photo)
+                    label.image = photo  # сохраняем ссылку, чтобы не удалилось
+                    label.grid(row=row, column=0, columnspan=2, pady=10)
+                except Exception as e:
+                    ttk.Label(win, text=f"{key}: [не удалось отобразить изображение]").grid(row=row, column=0, columnspan=2, sticky='w', padx=5, pady=2)
+            else:
+                ttk.Label(win, text=f"{key}:").grid(row=row, column=0, sticky='e', padx=5, pady=2)
+                ttk.Label(win, text=str(value)).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+            row += 1
+
+
+
 
 class RelationTab(ttk.Frame):
     def __init__(self, parent, db):
@@ -140,6 +289,7 @@ class ViewTab(ttk.Frame):
 
         self.tree = ttk.Treeview(frame, show='headings', yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         self.tree.pack(side='left', fill='both', expand=True)
+        
 
         y_scroll.config(command=self.tree.yview)
         y_scroll.pack(side='right', fill='y')
