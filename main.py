@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 from db import Database
 from PIL import Image, ImageTk
 import io
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 
 
 class App(tk.Tk):
@@ -122,6 +124,7 @@ class TableTab(ttk.Frame):
 
         win = tk.Toplevel(self)
         win.title(f"Добавить запись в {table}")
+        win.attributes('-topmost', True)
         entries = {}
 
         for i, col in enumerate(cols):
@@ -312,10 +315,40 @@ class ChartTab(ttk.Frame):
         self.db = db
         ttk.Button(self, text="Статистика курсов", command=self.plot).pack(pady=5)
         ttk.Button(self, text="Экспорт в Excel", command=self.export).pack(pady=5)
+        self.canvas = None  # Для хранения текущего холста
 
     def plot(self):
-        df = pd.DataFrame(self.db.call_function('get_course_statistics'))
-        plt.figure(); plt.bar(df.index, df['total_courses']); plt.title("Всего курсов"); plt.show()
+        data = self.db.call_function('get_school_course_stats')
+        if not data:
+            messagebox.showinfo("Информация", "Нет данных для отображения.")
+            return
+
+        df = pd.DataFrame(data)
+
+        # Усечение до 100 записей
+        df = df.sort_values(by='course_count', ascending=False).head(10)
+
+        fig = Figure(figsize=(8, 10), dpi=80)  # Сделаем график повыше
+        ax = fig.add_subplot(111)
+        ax.barh(df['school_name'], df['course_count'])  # Горизонтальный график
+
+        ax.set_title("Всего курсов")
+        ax.set_ylabel("Школа")
+        ax.set_xlabel("Количество курсов")
+
+        ax.invert_yaxis()  # Чтобы топ-школы были вверху
+
+        if self.canvas:
+            self.canvas.get_tk_widget().destroy()
+
+        self.canvas = FigureCanvasTkAgg(fig, master=self)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(fill='both', expand=True)
+
+
+
+
+
 
     def export(self):
         df = pd.DataFrame(self.db.call_function('get_school_course_stats'))
